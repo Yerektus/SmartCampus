@@ -100,15 +100,50 @@ function sentenceCount(text: string): number {
   return matches ? matches.length : 1;
 }
 
-function claimsWrongAvailability(text: string, isAvailable: boolean): boolean {
-  const t = text.toLowerCase();
-  if (isAvailable) {
-    return /\bnot available\b|\bunavailable\b|\bcannot be booked\b/.test(t);
-  }
-  return /\bavailable\b/.test(t) && !/\bnot available\b|\bunavailable\b/.test(t);
+function extractClockTimes(s: string): string[] {
+  return s.match(/\b\d{1,2}:\d{2}\b/g) ?? [];
 }
 
-export function validateExplanation(value: unknown, isAvailable: boolean): ExplanationResult {
+function claimsWrongAvailability(
+  text: string,
+  isAvailable: boolean,
+  times?: { start: string; end: string }
+): boolean {
+  const t = text.toLowerCase();
+  if (isAvailable) {
+    if (
+      /\bnot available\b|\bunavailable\b|\bbooked\b|\btaken\b|\boccupied\b|\boverlap\b|\bblocked\b|\bcan'?t\b|\bcannot\b|\bnot possible\b/.test(
+        t
+      )
+    ) {
+      return true;
+    }
+  } else {
+    const stripped = t.replace(/\bnot available\b/g, '').replace(/\bunavailable\b/g, '');
+    if (/\bavailable\b/.test(stripped)) return true;
+    if (/\bfree\b|\bgo ahead\b|\bcan book\b|\bproceed\b/.test(t)) return true;
+  }
+  // Invented personal details: a personal title or a clock time that does not
+  // appear in the checked start/end is fabricated, not derived from the facts.
+  if (/\b(?:prof|dr|mr|ms|mrs)\./.test(t)) return true;
+  const allowed = new Set(
+    times
+      ? [times.start, times.end].flatMap((iso) =>
+          extractClockTimes(iso.includes('T') ? iso.slice(iso.indexOf('T') + 1) : iso)
+        )
+      : []
+  );
+  for (const tm of extractClockTimes(t)) {
+    if (!allowed.has(tm)) return true;
+  }
+  return false;
+}
+
+export function validateExplanation(
+  value: unknown,
+  isAvailable: boolean,
+  times?: { start: string; end: string }
+): ExplanationResult {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     return { ok: false, error: 'Output must be an object.' };
   }
@@ -127,7 +162,7 @@ export function validateExplanation(value: unknown, isAvailable: boolean): Expla
   if (sentenceCount(text) > 2) {
     return { ok: false, error: 'Explanation must be at most 2 sentences.' };
   }
-  if (claimsWrongAvailability(text, isAvailable)) {
+  if (claimsWrongAvailability(text, isAvailable, times)) {
     return { ok: false, error: 'Explanation contradicts the confirmed availability status.' };
   }
   return { ok: true, value: { explanation: text } };

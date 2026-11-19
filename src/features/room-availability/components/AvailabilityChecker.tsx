@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { DoorClosed, Clock, CalendarClock, CheckCircle2, XCircle, Sparkles, Loader2 } from 'lucide-react';
 import { checkAvailability } from '@/availability';
 import { explainAvailability } from '@/features/room-availability/explain/explain';
-import { getReasonCode } from '@/features/room-availability/explain/reason';
+import { buildExplainRequest } from '@/features/room-availability/explain/snapshot';
 import type { ExplainResult } from '@/features/room-availability/explain/explain';
 import type { SimulateMode } from '@/features/room-availability/explain/mockAdapter';
 import { mockAdapter } from '@/features/room-availability/explain/mockAdapter';
@@ -45,6 +45,7 @@ function TimeField({
   );
 }
 
+
 export function AvailabilityChecker() {
   const [blocked, setBlocked] = useState(false);
   const [startStr, setStartStr] = useState('11:00');
@@ -53,6 +54,13 @@ export function AvailabilityChecker() {
   const [explain, setExplain] = useState<ExplainResult | null>(null);
   const [explainLoading, setExplainLoading] = useState(false);
   const [simulate, setSimulate] = useState<SimulateMode>('ok');
+  const [snapshot, setSnapshot] = useState<{
+    blocked: boolean;
+    start: string;
+    end: string;
+    result: 'Available' | 'Unavailable';
+  } | null>(null);
+  const requestSeq = useRef(0);
 
   // Clear the explanation whenever any input changes.
   useEffect(() => {
@@ -66,31 +74,25 @@ export function AvailabilityChecker() {
       start: toDateTimeString(startStr),
       end: toDateTimeString(endStr),
     };
+    const status = checkAvailability(room, DEFAULT_BOOKINGS, request, FIXED_NOW);
+    requestSeq.current += 1;
     setExplain(null);
-    setResult(checkAvailability(room, DEFAULT_BOOKINGS, request, FIXED_NOW));
+    setExplainLoading(false);
+    setSnapshot({ blocked, start: request.start, end: request.end, result: status });
+    setResult(status);
   }
 
   async function handleExplain() {
-    if (!result) return;
-    const room = { id: 'A-101', blocked };
-    const request = {
-      start: toDateTimeString(startStr),
-      end: toDateTimeString(endStr),
-    };
+    if (!snapshot || explainLoading) return;
+    const requestId = ++requestSeq.current;
     setExplainLoading(true);
     setExplain(null);
-    const reasonCode = getReasonCode(room, DEFAULT_BOOKINGS, request, FIXED_NOW);
-    const outcome = await explainAvailability(
-      {
-        roomLabel: room.id,
-        start: request.start,
-        end: request.end,
-        isAvailable: result === 'Available',
-        reasonCode,
-      },
-      mockAdapter,
-      simulate
-    );
+    const built = buildExplainRequest(snapshot, FIXED_NOW, DEFAULT_BOOKINGS, 'A-101');
+    const outcome = built.input
+      ? await explainAvailability(built.input, mockAdapter, simulate)
+      : { explanation: 'The explanation request was invalid.', source: 'rejected' as const };
+    // Ignore stale responses: only the newest request may update the UI.
+    if (requestId !== requestSeq.current) return;
     setExplain(outcome);
     setExplainLoading(false);
   }

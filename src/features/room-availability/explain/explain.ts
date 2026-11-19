@@ -42,7 +42,10 @@ export async function explainAvailability(
       ),
     ]);
 
-    const checked = validateExplanation(raced, input.isAvailable);
+    const checked = validateExplanation(raced, input.isAvailable, {
+      start: input.start,
+      end: input.end,
+    });
     if (!checked.ok) {
       return { explanation: fallbackText(input), source: 'fallback' };
     }

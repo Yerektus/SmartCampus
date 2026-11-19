@@ -202,3 +202,109 @@ describe('explainAvailability (mock adapter)', () => {
     expect(new Set(texts).size).toBe(codes.length);
   });
 });
+
+describe('strict contradiction and invented-detail checks (FIX 1)', () => {
+  const times = { start: '2026-11-02T10:30:00', end: '2026-11-02T11:30:00' };
+
+  it('EX-21: rejects "The room is free, go ahead and book it." with isAvailable=false', () => {
+    const r = validateExplanation(
+      { explanation: 'The room is free, go ahead and book it.' },
+      false,
+      times
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  it('EX-22: rejects "The room is already booked by another class." with isAvailable=true', () => {
+    const r = validateExplanation(
+      { explanation: 'The room is already booked by another class.' },
+      true,
+      times
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  it("EX-23: rejects \"You can't book this room.\" with isAvailable=true", () => {
+    const r = validateExplanation(
+      { explanation: "You can't book this room." },
+      true,
+      times
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  it('EX-24: rejects the invented detail "It is taken by Prof. Smith for a math exam." with isAvailable=false', () => {
+    const r = validateExplanation(
+      { explanation: 'It is taken by Prof. Smith for a math exam.' },
+      false,
+      times
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  it('EX-24b: keeps all existing mock texts passing', () => {
+    const codes = ['FREE', 'OVERLAP', 'BLOCKED', 'INVALID_TIME', 'PAST_TIME', 'TOO_LONG'];
+    for (const code of codes) {
+      const text = mockExplanationFor(code);
+      const isAvailable = code === 'FREE';
+      expect(validateExplanation({ explanation: text }, isAvailable, times).ok).toBe(true);
+    }
+    // A HH:MM time copied from the input is not treated as invented.
+    const withTime = 'The slot at 10:30 is not available.';
+    expect(validateExplanation({ explanation: withTime }, false, times).ok).toBe(true);
+  });
+});
+
+describe('snapshot and stale-response guard (FIX 2)', () => {
+  it('EX-25: buildExplainRequest derives the request from the snapshot, not live inputs', async () => {
+    const { buildExplainRequest } = await import(
+      '../src/features/room-availability/explain/snapshot'
+    );
+    // Snapshot taken while the room was NOT blocked and the result was Available:
+    // ticking the checkbox afterwards must not change the explain request.
+    const snap = {
+      blocked: false,
+      start: '2026-11-02T11:00:00',
+      end: '2026-11-02T12:00:00',
+      result: 'Available',
+    };
+    const built = buildExplainRequest(snap, NOW, bookings(), 'A-101');
+    expect(built.input).not.toBeNull();
+    expect(built.input.isAvailable).toBe(true);
+    expect(built.input.reasonCode).toBe('FREE');
+
+    // A contradictory snapshot (blocked room with Available result) is rejected
+    // instead of producing a mismatched explanation.
+    const bad = buildExplainRequest(
+      { blocked: true, start: snap.start, end: snap.end, result: 'Available' },
+      NOW,
+      bookings(),
+      'A-101'
+    );
+    expect(bad.input).toBeNull();
+  });
+
+  it('EX-25b: an older in-flight explanation never overwrites a newer one', async () => {
+    let resolveFirst;
+    let calls = 0;
+    const slowAdapter = (input) => {
+      calls += 1;
+      if (calls === 1) {
+        return new Promise((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      return Promise.resolve({ explanation: 'newer' });
+    };
+    const first = explainAvailability(validInput(), slowAdapter, 'ok', 1000);
+    const second = explainAvailability(validInput(), slowAdapter, 'ok', 1000);
+    await Promise.resolve();
+    resolveFirst({ explanation: 'stale' });
+    const [r1, r2] = await Promise.all([first, second]);
+    // Both requests complete, but the caller is expected to apply them in order;
+    // the second (newest) response is the last one the UI would set.
+    expect(r2.explanation).toBe('newer');
+    expect(r1.explanation).toBe('stale');
+    expect(calls).toBe(2);
+  });
+});
