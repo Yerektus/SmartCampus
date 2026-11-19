@@ -1,6 +1,11 @@
-import { useState } from 'react';
-import { DoorClosed, Clock, CalendarClock, CheckCircle2, XCircle } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { DoorClosed, Clock, CalendarClock, CheckCircle2, XCircle, Sparkles, Loader2 } from 'lucide-react';
 import { checkAvailability } from '@/availability';
+import { explainAvailability } from '@/features/room-availability/explain/explain';
+import { getReasonCode } from '@/features/room-availability/explain/reason';
+import type { ExplainResult } from '@/features/room-availability/explain/explain';
+import type { SimulateMode } from '@/features/room-availability/explain/mockAdapter';
+import { mockAdapter } from '@/features/room-availability/explain/mockAdapter';
 
 const FIXED_NOW = new Date('2026-11-02T08:00:00');
 const DATE_STR = '2026-11-02';
@@ -45,6 +50,15 @@ export function AvailabilityChecker() {
   const [startStr, setStartStr] = useState('11:00');
   const [endStr, setEndStr] = useState('12:00');
   const [result, setResult] = useState<'Available' | 'Unavailable' | null>(null);
+  const [explain, setExplain] = useState<ExplainResult | null>(null);
+  const [explainLoading, setExplainLoading] = useState(false);
+  const [simulate, setSimulate] = useState<SimulateMode>('ok');
+
+  // Clear the explanation whenever any input changes.
+  useEffect(() => {
+    setExplain(null);
+    setExplainLoading(false);
+  }, [blocked, startStr, endStr, simulate]);
 
   function handleCheck() {
     const room = { id: 'A-101', blocked };
@@ -52,7 +66,33 @@ export function AvailabilityChecker() {
       start: toDateTimeString(startStr),
       end: toDateTimeString(endStr),
     };
+    setExplain(null);
     setResult(checkAvailability(room, DEFAULT_BOOKINGS, request, FIXED_NOW));
+  }
+
+  async function handleExplain() {
+    if (!result) return;
+    const room = { id: 'A-101', blocked };
+    const request = {
+      start: toDateTimeString(startStr),
+      end: toDateTimeString(endStr),
+    };
+    setExplainLoading(true);
+    setExplain(null);
+    const reasonCode = getReasonCode(room, DEFAULT_BOOKINGS, request, FIXED_NOW);
+    const outcome = await explainAvailability(
+      {
+        roomLabel: room.id,
+        start: request.start,
+        end: request.end,
+        isAvailable: result === 'Available',
+        reasonCode,
+      },
+      mockAdapter,
+      simulate
+    );
+    setExplain(outcome);
+    setExplainLoading(false);
   }
 
   return (
@@ -166,6 +206,61 @@ export function AvailabilityChecker() {
                     : 'This time slot is not available.'}
                 </p>
               </div>
+            </div>
+          )}
+
+          {/* Explain availability (mock AI) */}
+          {result && (
+            <div className="space-y-3">
+              <div className="flex flex-col sm:flex-row gap-3">
+                <button
+                  onClick={handleExplain}
+                  disabled={explainLoading}
+                  className="flex-1 flex items-center justify-center gap-2 rounded-xl border border-sky-200 bg-sky-50 text-sky-700 font-semibold py-2.5 text-sm hover:bg-sky-100 active:bg-sky-200 transition disabled:opacity-60 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-sky-500 focus:ring-offset-2"
+                >
+                  {explainLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Sparkles className="w-4 h-4" />
+                  )}
+                  {explainLoading ? 'Generating explanation…' : 'Explain availability'}
+                </button>
+                <label className="flex items-center gap-2 text-xs text-slate-500">
+                  <span>Simulate AI</span>
+                  <select
+                    value={simulate}
+                    onChange={(e) => setSimulate(e.target.value as SimulateMode)}
+                    className="rounded-lg border border-slate-300 px-2 py-2 text-xs text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500 transition"
+                  >
+                    <option value="ok">ok</option>
+                    <option value="timeout">timeout</option>
+                    <option value="error">error</option>
+                    <option value="contradict">contradict</option>
+                    <option value="too_long">too_long</option>
+                  </select>
+                </label>
+              </div>
+
+              {explain && (
+                <div
+                  className={`rounded-xl border p-4 animate-[fadeIn_0.2s_ease-out] ${
+                    explain.source === 'ai-mock'
+                      ? 'border-sky-200 bg-sky-50'
+                      : 'border-amber-200 bg-amber-50'
+                  }`}
+                >
+                  <p
+                    className={`text-xs font-semibold uppercase tracking-wide mb-1 ${
+                      explain.source === 'ai-mock' ? 'text-sky-700' : 'text-amber-700'
+                    }`}
+                  >
+                    {explain.source === 'ai-mock'
+                      ? 'AI-generated explanation (mock) - the booking decision above is the confirmed status'
+                      : 'Standard explanation (AI unavailable)'}
+                  </p>
+                  <p className="text-sm text-slate-700">{explain.explanation}</p>
+                </div>
+              )}
             </div>
           )}
         </div>
